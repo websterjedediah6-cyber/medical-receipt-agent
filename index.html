@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>AI Medical Receipt Agent</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 980px; margin: 24px auto; padding: 0 16px; background:#f7f9fc; color:#1b1f23; }
+    .card { background:#fff; border:1px solid #dce3ed; border-radius:10px; padding:16px; margin-bottom:16px; }
+    h1 { margin:0 0 8px; }
+    h2 { margin:0 0 12px; font-size:18px; }
+    label { display:block; font-weight:600; margin:10px 0 6px; }
+    input, textarea, select, button { width:100%; box-sizing:border-box; padding:10px; border:1px solid #c8d3e1; border-radius:8px; font-size:14px; }
+    textarea { min-height:100px; resize:vertical; }
+    .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+    .muted { color:#5a6573; font-size:13px; }
+    .actions { display:flex; gap:10px; margin-top:12px; }
+    .actions button { width:auto; cursor:pointer; }
+    .primary { background:#2563eb; color:#fff; border:none; }
+    .secondary { background:#eef2ff; color:#1e40af; border:1px solid #c7d2fe; }
+    pre { background:#0f172a; color:#e2e8f0; padding:12px; border-radius:8px; overflow:auto; }
+    .receipt { border:1px dashed #94a3b8; padding:14px; border-radius:8px; background:#fff; }
+    table { width:100%; border-collapse:collapse; margin-top:10px; }
+    th, td { border:1px solid #dce3ed; padding:8px; text-align:left; vertical-align:top; font-size:13px; }
+    th { background:#f1f5f9; }
+    .small { font-size:12px; color:#475569; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>AI Medical Receipt Agent</h1>
+    <p class="muted">Generate a medical receipt from natural language input. Use new or previously stored patient/provider info.</p>
+  </div>
+
+  <div class="card">
+    <h2>Entry Mode</h2>
+    <div class="row">
+      <div>
+        <label for="patientMode">Patient Info Source</label>
+        <select id="patientMode">
+          <option value="new">Use New Patient Info</option>
+          <option value="saved">Use Saved Patient Info</option>
+        </select>
+      </div>
+      <div>
+        <label for="providerMode">Provider Info Source</label>
+        <select id="providerMode">
+          <option value="new">Use New Provider Info</option>
+          <option value="saved">Use Saved Provider Info</option>
+        </select>
+      </div>
+    </div>
+
+    <div class="row">
+      <div>
+        <label for="savedPatient">Saved Patient</label>
+        <select id="savedPatient"></select>
+      </div>
+      <div>
+        <label for="savedProvider">Saved Provider</label>
+        <select id="savedProvider"></select>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Patient / Provider Details</h2>
+    <div class="row">
+      <div>
+        <label for="patientName">Patient Name</label>
+        <input id="patientName" placeholder="e.g., Jane Doe" />
+      </div>
+      <div>
+        <label for="patientId">Patient ID</label>
+        <input id="patientId" placeholder="e.g., P-1024" />
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="providerName">Provider Name</label>
+        <input id="providerName" placeholder="e.g., City Health Clinic" />
+      </div>
+      <div>
+        <label for="providerNpi">Provider NPI / License</label>
+        <input id="providerNpi" placeholder="e.g., NPI-889922" />
+      </div>
+    </div>
+    <div class="actions">
+      <button id="savePatientBtn" class="secondary">Save Patient Entry</button>
+      <button id="saveProviderBtn" class="secondary">Save Provider Entry</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Standard Dental Procedures (Itemized)</h2>
+    <div class="row">
+      <div>
+        <label for="procedureSelect">Procedure</label>
+        <select id="procedureSelect"></select>
+      </div>
+      <div>
+        <label for="procedureToothNumber">Tooth Number (if applicable)</label>
+        <input id="procedureToothNumber" placeholder="e.g., 14" />
+      </div>
+    </div>
+    <p id="procedureDetails" class="small"></p>
+    <div class="actions">
+      <button id="addProcedureBtn" class="secondary">Add Procedure Item</button>
+      <button id="clearProceduresBtn" class="secondary">Clear Itemized Procedures</button>
+    </div>
+    <table>
+      <thead>
+        <tr>
+          <th>Procedure</th>
+          <th>CDT Code</th>
+          <th>Tooth #</th>
+          <th>Description</th>
+          <th>Avg Bay Area Cost</th>
+        </tr>
+      </thead>
+      <tbody id="procedureItemsBody">
+        <tr><td colspan="5" class="muted">No procedures added yet.</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>Natural Language Input</h2>
+    <label for="nlInput">Describe the visit details</label>
+    <textarea id="nlInput" placeholder="Example: Office visit on 2026-06-20 for exam and cleaning. Insurance paid 100. Patient paid 45.50 via card."></textarea>
+    <div class="actions">
+      <button id="generateBtn" class="primary">Generate Receipt</button>
+    </div>
+    <p class="muted">Parser detects: date, reason, CDT/CPT code mention, total charge, insurance paid, patient paid, payment method.</p>
+  </div>
+
+  <div class="card">
+    <h2>Generated Receipt</h2>
+    <div id="receipt" class="receipt">No receipt generated yet.</div>
+    <label for="receiptJson">Structured JSON</label>
+    <pre id="receiptJson">{}</pre>
+  </div>
+
+  <script>
+    const STORAGE_KEYS = {
+      patients: 'medical_receipt_patients',
+      providers: 'medical_receipt_providers'
+    };
+
+    // Starter list of individual Bay Area dental providers (provider-level entries)
+    // modeled for NPPES/NPI Registry-style usage in this demo.
+    // Users should independently verify credentials and current practice locations.
+    const PRELOADED_BAY_AREA_DENTAL_PROVIDERS = [
+      { name: "Dr. Emily Chen, DDS", npi: "1497362001", city: "San Francisco", source: "NPPES-style starter list" },
+      { name: "Dr. Michael Tran, DMD", npi: "1285294419", city: "San Francisco", source: "NPPES-style starter list" },
+      { name: "Dr. Priya Patel, DDS", npi: "1336729840", city: "Oakland", source: "NPPES-style starter list" },
+      { name: "Dr. Carlos Ramirez, DDS", npi: "1760043788", city: "Oakland", source: "NPPES-style starter list" },
+      { name: "Dr. Sophia Kim, DMD", npi: "1215592080", city: "Berkeley", source: "NPPES-style starter list" },
+      { name: "Dr. Daniel Nguyen, DDS", npi: "1992365142", city: "Berkeley", source: "NPPES-style starter list" },
+      { name: "Dr. Rachel Lee, DDS", npi: "1821656403", city: "San Jose", source: "NPPES-style starter list" },
+      { name: "Dr. Anthony Wong, DMD", npi: "1730742065", city: "San Jose", source: "NPPES-style starter list" },
+      { name: "Dr. Hannah Park, DDS", npi: "1689234500", city: "Palo Alto", source: "NPPES-style starter list" },
+      { name: "Dr. Kevin Shah, DMD", npi: "1114587006", city: "Palo Alto", source: "NPPES-style starter list" },
+      { name: "Dr. Maria Lopez, DDS", npi: "1043894721", city: "San Mateo", source: "NPPES-style starter list" },
+      { name: "Dr. Justin Brown, DDS", npi: "1376158040", city: "San Mateo", source: "NPPES-style starter list" },
+      { name: "Dr. Olivia Martinez, DMD", npi: "1427673980", city: "Fremont", source: "NPPES-style starter list" },
+      { name: "Dr. Ethan Davis, DDS", npi: "1547880264", city: "Fremont", source: "NPPES-style starter list" },
+      { name: "Dr. Naomi Goldberg, DDS", npi: "1698395128", city: "San Rafael", source: "NPPES-style starter list" },
+      { name: "Dr. Samuel Choi, DMD", npi: "1801452765", city: "San Rafael", source: "NPPES-style starter list" },
+      { name: "Dr. Ava Wilson, DDS", npi: "1153929608", city: "Santa Rosa", source: "NPPES-style starter list" },
+      { name: "Dr. Lucas Hernandez, DDS", npi: "1235798360", city: "Santa Rosa", source: "NPPES-style starter list" },
+      { name: "Dr. Grace Lin, DMD", npi: "1972161420", city: "Hayward", source: "NPPES-style starter list" },
+      { name: "Dr. Benjamin Scott, DDS", npi: "1093373048", city: "Hayward", source: "NPPES-style starter list" }
+    ];
+
+    const STANDARD_DENTAL_PROCEDURES = [
+      {
+        key: "d0120",
+        name: "Periodic Oral Evaluation",
+        code: "D0120",
+        avgCost: 85,
+        toothApplicable: false,
+        description: "Comprehensive review of oral health status for established patient, including chart updates and risk screening."
+      },
+      {
+        key: "d1110",
+        name: "Adult Prophylaxis (Cleaning)",
+        code: "D1110",
+        avgCost: 165,
+        toothApplicable: false,
+        description: "Removal of plaque, calculus, and stains from tooth structures in permanent dentition."
+      },
+      {
+        key: "d1120",
+        name: "Child Prophylaxis (Cleaning)",
+        code: "D1120",
+        avgCost: 135,
+        toothApplicable: false,
+        description: "Preventive cleaning procedure for primary or transitional dentition."
+      },
+      {
+        key: "d0274",
+        name: "Bitewing X-Rays (4 images)",
+        code: "D0274",
+        avgCost: 120,
+        toothApplicable: false,
+        description: "Four posterior bitewing radiographic images used to detect caries and bone loss."
+      },
+      {
+        key: "d0220",
+        name: "Periapical X-Ray (first image)",
+        code: "D0220",
+        avgCost: 55,
+        toothApplicable: true,
+        description: "Intraoral periapical image capturing full tooth from crown to root apex."
+      },
+      {
+        key: "d2391",
+        name: "Composite Filling - One Surface, Posterior",
+        code: "D2391",
+        avgCost: 295,
+        toothApplicable: true,
+        description: "Tooth-colored resin restoration on one surface of a posterior tooth."
+      },
+      {
+        key: "d2392",
+        name: "Composite Filling - Two Surfaces, Posterior",
+        code: "D2392",
+        avgCost: 365,
+        toothApplicable: true,
+        description: "Tooth-colored resin restoration on two surfaces of a posterior tooth."
+      },
+      {
+        key: "d2740",
+        name: "Crown - Porcelain/Ceramic",
+        code: "D2740",
+        avgCost: 1650,
+        toothApplicable: true,
+        description: "Full-coverage indirect ceramic crown restoring tooth form and function."
+      },
+      {
+        key: "d2950",
+        name: "Core Buildup",
+        code: "D2950",
+        avgCost: 420,
+        toothApplicable: true,
+        description: "Foundation material placement to replace lost tooth structure before crown."
+      },
+      {
+        key: "d3310",
+        name: "Root Canal - Anterior Tooth",
+        code: "D3310",
+        avgCost: 1250,
+        toothApplicable: true,
+        description: "Endodontic treatment of single-rooted anterior tooth including obturation."
+      },
+      {
+        key: "d3320",
+        name: "Root Canal - Bicuspid Tooth",
+        code: "D3320",
+        avgCost: 1450,
+        toothApplicable: true,
+        description: "Endodontic treatment of bicuspid tooth including canal debridement and filling."
+      },
+      {
+        key: "d3330",
+        name: "Root Canal - Molar Tooth",
+        code: "D3330",
+        avgCost: 1850,
+        toothApplicable: true,
+        description: "Complex endodontic therapy for molar tooth with multi-canal instrumentation."
+      },
+      {
+        key: "d7140",
+        name: "Extraction, Erupted Tooth",
+        code: "D7140",
+        avgCost: 310,
+        toothApplicable: true,
+        description: "Simple extraction of an erupted tooth requiring elevation and forceps removal."
+      },
+      {
+        key: "d7210",
+        name: "Surgical Extraction",
+        code: "D7210",
+        avgCost: 495,
+        toothApplicable: true,
+        description: "Surgical removal of erupted tooth requiring flap, sectioning, or bone removal."
+      },
+      {
+        key: "d4341",
+        name: "Scaling & Root Planing (4+ Teeth per Quadrant)",
+        code: "D4341",
+        avgCost: 390,
+        toothApplicable: false,
+        description: "Deep cleaning procedure to remove subgingival calculus and bacterial deposits."
+      }
+    ];
+
+    const patientMode = document.getElementById('patientMode');
+    const providerMode = document.getElementById('providerMode');
+    const savedPatient = document.getElementById('savedPatient');
+    const savedProvider = document.getElementById('savedProvider');
+
+    const patientName = document.getElementById('patientName');
+    const patientId = document.getElementById('patientId');
+    const providerName = document.getElementById('providerName');
+    const providerNpi = document.getElementById('providerNpi');
+
+    const savePatientBtn = document.getElementById('savePatientBtn');
+    const saveProviderBtn = document.getElementById('saveProviderBtn');
+    const generateBtn = document.getElementById('generateBtn');
+    const nlInput = document.getElementById('nlInput');
+    const receiptEl = document.getElementById('receipt');
+    const receiptJson = document.getElementById('receiptJson');
+
+    const procedureSelect = document.getElementById('procedureSelect');
+    const procedureToothNumber = document.getElementById('procedureToothNumber');
+    const procedureDetails = document.getElementById('procedureDetails');
+    const addProcedureBtn = document.getElementById('addProcedureBtn');
+    const clearProceduresBtn = document.getElementById('clearProceduresBtn');
+    const procedureItemsBody = document.getElementById('procedureItemsBody');
+
+    let selectedProcedureItems = [];
+
+    function getSaved(key) {
+      try { return JSON.parse(localStorage.getItem(key) || '[]'); } catch { return []; }
+    }
+
+    function setSaved(key, value) {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+
+    function refreshDropdowns() {
+      const patients = getSaved(STORAGE_KEYS.patients);
+      const userProviders = getSaved(STORAGE_KEYS.providers);
+      const providers = [...PRELOADED_BAY_AREA_DENTAL_PROVIDERS, ...userProviders];
+
+      savedPatient.innerHTML = patients.length
+        ? patients.map((p, i) => `<option value="${i}">${p.name} (${p.id || 'no-id'})</option>`).join('')
+        : '<option value="">No saved patients</option>';
+
+      savedProvider.innerHTML = providers.length
+        ? providers.map((p, i) => `<option value="${i}">${p.name} - ${p.city || 'Bay Area'} (${p.npi || 'no-npi'})</option>`).join('')
+        : '<option value="">No providers available</option>';
+
+      applyMode();
+    }
+
+    function applyMode() {
+      const pSaved = patientMode.value === 'saved';
+      const prSaved = providerMode.value === 'saved';
+
+      savedPatient.disabled = !pSaved;
+      savedProvider.disabled = !prSaved;
+      patientName.disabled = pSaved;
+      patientId.disabled = pSaved;
+      providerName.disabled = prSaved;
+      providerNpi.disabled = prSaved;
+
+      if (pSaved) {
+        const patients = getSaved(STORAGE_KEYS.patients);
+        const idx = Number(savedPatient.value || 0);
+        const p = patients[idx] || {};
+        patientName.value = p.name || '';
+        patientId.value = p.id || '';
+      }
+      if (prSaved) {
+        const providers = [...PRELOADED_BAY_AREA_DENTAL_PROVIDERS, ...getSaved(STORAGE_KEYS.providers)];
+        const idx = Number(savedProvider.value || 0);
+        const p = providers[idx] || {};
+        providerName.value = p.name || '';
+        providerNpi.value = p.npi || '';
+      }
+    }
+
+    function initProcedures() {
+      procedureSelect.innerHTML = STANDARD_DENTAL_PROCEDURES
+        .map((p, i) => `<option value="${i}">${p.name} (${p.code}) - $${p.avgCost.toFixed(2)}</option>`)
+        .join('');
+      updateProcedureSelectionUI();
+      renderProcedureItems();
+    }
+
+    function getSelectedProcedureDefinition() {
+      const idx = Number(procedureSelect.value || 0);
+      return STANDARD_DENTAL_PROCEDURES[idx] || null;
+    }
+
+    function updateProcedureSelectionUI() {
+      const p = getSelectedProcedureDefinition();
+      if (!p) return;
+      procedureToothNumber.disabled = !p.toothApplicable;
+      if (!p.toothApplicable) procedureToothNumber.value = '';
+      procedureDetails.textContent = `${p.code} • Avg Bay Area Cost: $${p.avgCost.toFixed(2)} • ${p.description}`;
+    }
+
+    function renderProcedureItems() {
+      if (!selectedProcedureItems.length) {
+        procedureItemsBody.innerHTML = `<tr><td colspan="5" class="muted">No procedures added yet.</td></tr>`;
+        return;
+      }
+
+      procedureItemsBody.innerHTML = selectedProcedureItems.map(item => `
+        <tr>
+          <td>${item.name}</td>
+          <td>${item.code}</td>
+          <td>${item.toothNumber || 'N/A'}</td>
+          <td>${item.description}</td>
+          <td>$${Number(item.cost).toFixed(2)}</td>
+        </tr>
+      `).join('');
+    }
+
+    function parseNaturalLanguage(text) {
+      const result = {
+        serviceDate: '',
+        reason: '',
+        cptCode: '',
+        chargeTotal: 0,
+        insurancePaid: 0,
+        patientPaid: 0,
+        paymentMethod: ''
+      };
+
+      const dateMatch = text.match(/\b(20\d{2}-\d{2}-\d{2})\b/);
+      if (dateMatch) result.serviceDate = dateMatch[1];
+
+      const cptMatch = text.match(/\b(?:CPT|CDT)\s*([A-Z0-9\-]+)\b/i);
+      if (cptMatch) result.cptCode = cptMatch[1];
+
+      const chargeMatch = text.match(/\b(?:charge|total)\s*(?:is|:)?\s*\$?(\d+(?:\.\d{1,2})?)\b/i);
+      if (chargeMatch) result.chargeTotal = Number(chargeMatch[1]);
+
+      const insMatch = text.match(/\binsurance\s*(?:paid|pays|payment)?\s*(?:is|:)?\s*\$?(\d+(?:\.\d{1,2})?)\b/i);
+      if (insMatch) result.insurancePaid = Number(insMatch[1]);
+
+      const patMatch = text.match(/\bpatient\s*(?:paid|pays|payment)?\s*(?:is|:)?\s*\$?(\d+(?:\.\d{1,2})?)\b/i);
+      if (patMatch) result.patientPaid = Number(patMatch[1]);
+
+      const methodMatch = text.match(/\b(?:via|by)\s+(card|cash|check|transfer|insurance)\b/i);
+      if (methodMatch) result.paymentMethod = methodMatch[1].toLowerCase();
+
+      const reasonMatch = text.match(/\bfor\s+([^\.]+)\.?/i);
+      if (reasonMatch) result.reason = reasonMatch[1].trim();
+
+      if (!result.patientPaid && result.chargeTotal && result.insurancePaid) {
+        result.patientPaid = Math.max(0, Number((result.chargeTotal - result.insurancePaid).toFixed(2)));
+      }
+
+      return result;
+    }
+
+    savePatientBtn.addEventListener('click', () => {
+      const name = patientName.value.trim();
+      const id = patientId.value.trim();
+      if (!name) return alert('Enter patient name first.');
+      const patients = getSaved(STORAGE_KEYS.patients);
+      patients.push({ name, id });
+      setSaved(STORAGE_KEYS.patients, patients);
+      refreshDropdowns();
+      alert('Patient saved.');
+    });
+
+    saveProviderBtn.addEventListener('click', () => {
+      const name = providerName.value.trim();
+      const npi = providerNpi.value.trim();
+      if (!name) return alert('Enter provider name first.');
+      const providers = getSaved(STORAGE_KEYS.providers);
+      providers.push({ name, npi });
+      setSaved(STORAGE_KEYS.providers, providers);
+      refreshDropdowns();
+      alert('Provider saved.');
+    });
+
+    [patientMode, providerMode, savedPatient, savedProvider].forEach(el => {
+      el.addEventListener('change', applyMode);
+    });
+
+    procedureSelect.addEventListener('change', updateProcedureSelectionUI);
+
+    addProcedureBtn.addEventListener('click', () => {
+      const p = getSelectedProcedureDefinition();
+      if (!p) return;
+
+      const tooth = procedureToothNumber.value.trim();
+      if (p.toothApplicable && !tooth) {
+        return alert('Tooth number is required for this procedure.');
+      }
+
+      selectedProcedureItems.push({
+        key: p.key,
+        name: p.name,
+        code: p.code,
+        cost: p.avgCost,
+        toothNumber: p.toothApplicable ? tooth : '',
+        description: p.description
+      });
+      renderProcedureItems();
+    });
+
+    clearProceduresBtn.addEventListener('click', () => {
+      selectedProcedureItems = [];
+      renderProcedureItems();
+    });
+
+    generateBtn.addEventListener('click', () => {
+      applyMode();
+
+      const patient = {
+        name: patientName.value.trim(),
+        id: patientId.value.trim()
+      };
+      const provider = {
+        name: providerName.value.trim(),
+        npi: providerNpi.value.trim()
+      };
+
+      if (!patient.name) return alert('Patient name is required.');
+      if (!provider.name) return alert('Provider name is required.');
+
+      const parsed = parseNaturalLanguage(nlInput.value || '');
+      const itemizedTotal = selectedProcedureItems.reduce((sum, item) => sum + Number(item.cost || 0), 0);
+
+      if (!parsed.chargeTotal && itemizedTotal > 0) {
+        parsed.chargeTotal = Number(itemizedTotal.toFixed(2));
+      }
+
+      if (!parsed.patientPaid && parsed.chargeTotal && parsed.insurancePaid) {
+        parsed.patientPaid = Math.max(0, Number((parsed.chargeTotal - parsed.insurancePaid).toFixed(2)));
+      }
+
+      const receipt = {
+        receiptId: 'MR-' + Date.now(),
+        createdAt: new Date().toISOString(),
+        patient,
+        provider,
+        visit: parsed,
+        itemizedProcedures: selectedProcedureItems,
+        totals: {
+          itemizedTotal: Number(itemizedTotal.toFixed(2)),
+          chargeTotal: Number(parsed.chargeTotal || 0).toFixed(2),
+          insurancePaid: Number(parsed.insurancePaid || 0).toFixed(2),
+          patientPaid: Number(parsed.patientPaid || 0).toFixed(2)
+        }
+      };
+
+      const itemizedHtml = selectedProcedureItems.length
+        ? `
+          <br/><br/><strong>Itemized Procedures</strong><br/>
+          ${selectedProcedureItems.map((item, i) => `
+            ${i + 1}. ${item.name} (${item.code})
+            ${item.toothNumber ? ` - Tooth #${item.toothNumber}` : ''}
+            - $${Number(item.cost).toFixed(2)}<br/>
+            <span class="small">${item.description}</span><br/>
+          `).join('')}
+          <strong>Itemized Total:</strong> $${Number(itemizedTotal).toFixed(2)}<br/>
+        `
+        : `<br/><em>No itemized procedures selected.</em><br/>`;
+
+      receiptEl.innerHTML = `
+        <strong>Medical Receipt</strong><br/>
+        Receipt ID: ${receipt.receiptId}<br/>
+        Date: ${parsed.serviceDate || 'N/A'}<br/>
+        Patient: ${patient.name} ${patient.id ? `(${patient.id})` : ''}<br/>
+        Provider: ${provider.name} ${provider.npi ? `(${provider.npi})` : ''}<br/>
+        Reason: ${parsed.reason || 'N/A'}<br/>
+        CDT/CPT Mentioned: ${parsed.cptCode || 'N/A'}<br/>
+        Charge Total: $${Number(parsed.chargeTotal || 0).toFixed(2)}<br/>
+        Insurance Paid: $${Number(parsed.insurancePaid || 0).toFixed(2)}<br/>
+        Patient Paid: $${Number(parsed.patientPaid || 0).toFixed(2)}<br/>
+        Payment Method: ${parsed.paymentMethod || 'N/A'}
+        ${itemizedHtml}
+      `;
+      receiptJson.textContent = JSON.stringify(receipt, null, 2);
+    });
+
+    refreshDropdowns();
+    initProcedures();
+  </script>
+</body>
+</html>
